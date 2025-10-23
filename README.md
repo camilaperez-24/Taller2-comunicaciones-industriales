@@ -26,8 +26,8 @@ PROFINET: Se determina como ethernet industrial definido por PROFIBUS y PROFINET
 ## Segundo punto:   
 
 Para el segundo punto se utilizo una raspberry pi pico 2w y un servo motor.
-![raspberry](Taller2/raspberry.png)
-![servo Motor](Taller2/servoMotor.jpg)
+![Raspberry](Taller2/raspberry.png)
+![servomotor](Taller2/servoMotor.jpg)
 
 En esta actividad se desarrolló un sistema de control para un servo motor SG90 utilizando una Raspberry Pi Pico 2W conectada a través de un módulo MAX485 para comunicación industrial mediante RS-485. El objetivo fue demostrar los tres modos de comunicación (Simplex, Half Dúplex y Full Dúplex) y observar cómo afectan el intercambio de información entre dispositivos.
 
@@ -158,7 +158,435 @@ En Half Dúplex, el sistema envía un comando y espera confirmación del otro ex
 
 En Full Dúplex, se observan transmisiones y recepciones simultáneas, demostrando comunicación bidireccional continua.
 
+Codigos utilizados:  
+
+
+import machine
+import utime
+import _thread
+from micropython import const
+
+# Configuración de pines para Pico 2W
+UART_TX_PIN = const(0)    # GPIO0 - TX
+UART_RX_PIN = const(1)    # GPIO1 - RX 
+DE_PIN = const(2)         # GPIO2 - Driver Enable
+RE_PIN = const(3)         # GPIO3 - Receiver Enable
+SERVO_PIN = const(4)      # GPIO4 - Servo PWM
+
+# Configuración UART RS-485
+UART_BAUDRATE = const(9600)
+UART_ID = const(0)
+
+class ServoControlPico:
+    def _init_(self):
+        # Estado del sistema
+        self.running = True
+        self.servo_position = 90  # Posición inicial
+        self.mode = "HALF_DUPLEX"
+        
+        # Estadísticas
+        self.commands_sent = 0
+        self.commands_received = 0
+        
+        # Inicializar hardware
+        self.setup_pins()
+        self.setup_uart()
+        self.setup_servo()
+        
+        print("Sistema Servo RS-485 Pico 2W Inicializado")
+        self.show_status()
+    
+    def setup_pins(self):
+        """Configuración de pines GPIO"""
+        # Pines control RS-485
+        self.de_pin = machine.Pin(DE_PIN, machine.Pin.OUT)
+        self.re_pin = machine.Pin(RE_PIN, machine.Pin.OUT)
+        
+        # Inicialmente en modo recepción
+        self.set_receive_mode()
+    
+    def setup_uart(self):
+        """Configuración UART para RS-485"""
+        try:
+            self.uart = machine.UART(
+                UART_ID,
+                baudrate=UART_BAUDRATE,
+                tx=machine.Pin(UART_TX_PIN),
+                rx=machine.Pin(UART_RX_PIN),
+                bits=8,
+                parity=None,
+                stop=1
+            )
+            print(f"UART RS-485 inicializado a {UART_BAUDRATE} baudios")
+        except Exception as e:
+            print(f"Error UART: {e}")
+    
+    def setup_servo(self):
+        """Configuración del servo motor"""
+        self.servo = machine.PWM(machine.Pin(SERVO_PIN))
+        self.servo.freq(50)  # 50Hz para servo
+        self.set_servo_angle(90)  # Posición central
+    
+    def set_servo_angle(self, angle):
+        """Controla el servo (0-180 grados)"""
+        if 0 <= angle <= 180:
+            # Convertir ángulo a duty cycle (0.5ms - 2.5ms)
+            min_duty = 1638  # 0.5ms / 20ms * 65535
+            max_duty = 8192  # 2.5ms / 20ms * 65535
+            duty = int(min_duty + (angle / 180) * (max_duty - min_duty))
+            
+            self.servo.duty_u16(duty)
+            self.servo_position = angle
+            print(f"Servo: {angle}°")
+            return True
+        return False
+    
+    def set_transmit_mode(self):
+        """Modo transmisión RS-485"""
+        self.de_pin.value(1)  # HIGH
+        self.re_pin.value(1)  # HIGH
+        utime.sleep_ms(1)     # Estabilizar
+    
+    def set_receive_mode(self):
+        """Modo recepción RS-485"""
+        self.de_pin.value(0)  # LOW
+        self.re_pin.value(0)  # LOW
+        utime.sleep_ms(1)     # Estabilizar
+    
+    def send_command(self, command):
+        """Envía comando según modo actual"""
+        if not self.uart:
+            return False
+            
+        try:
+            data = f"{command}\n"
+            
+            if self.mode == "SIMPLEX":
+                # Simplex: siempre transmitir
+                self.set_transmit_mode()
+                self.uart.write(data)
+                
+            elif self.mode == "HALF_DUPLEX":
+                # Half Duplex: transmitir luego recibir
+                self.set_transmit_mode()
+                self.uart.write(data)
+                utime.sleep_ms(10)
+                self.set_receive_mode()
+                
+            elif self.mode == "FULL_DUPLEX":
+                # Full Duplex: transmitir mientras se recibe
+                self.set_transmit_mode()
+                self.uart.write(data)
+                # RE permanece en HIGH para transmisión continua
+                
+            self.commands_sent += 1
+            print(f"[TX {self.mode}] {command}")
+            return True
+            
+        except Exception as e:
+            print(f"Error TX: {e}")
+            return False
+    
+    def receive_data(self, timeout_ms=100):
+        """Recibe datos con timeout"""
+        if not self.uart:
+            return None
+            
+        start_time = utime.ticks_ms()
+        
+        while utime.ticks_diff(utime.ticks_ms(), start_time) < timeout_ms:
+            if self.uart.any():
+                try:
+                    data = self.uart.readline()
+                    if data:
+                        message = data.decode('utf-8').strip()
+                        self.commands_received += 1
+                        print(f"[RX {self.mode}] {message}")
+                        return message
+                except Exception as e:
+                    print(f"Error RX: {e}")
+            utime.sleep_ms(10)
+        
+        return None
+    
+    def continuous_receiver(self):
+        """Recepción continua para Full Duplex"""
+        print("Iniciando recepción continua...")
+        while self.running and self.mode == "FULL_DUPLEX":
+            data = self.receive_data(50)
+            if data:
+                self.process_command(data)
+            utime.sleep_ms(10)
+    
+    def process_command(self, command):
+        """Procesa comandos recibidos"""
+        if command.startswith("POS:"):
+            try:
+                angle = int(command[4:])
+                if self.set_servo_angle(angle):
+                    if self.mode == "FULL_DUPLEX":
+                        self.send_command(f"ACK:{angle}")
+            except ValueError:
+                print("Error: Ángulo inválido")
+        
+        elif command == "STATUS":
+            self.send_command(f"STATUS:{self.servo_position}")
+        
+        elif command == "PING":
+            self.send_command("PONG")
+    
+    def demo_simplex(self):
+        """Demostración modo Simplex"""
+        print("\n=== MODO SIMPLEX ===")
+        self.mode = "SIMPLEX"
+        self.set_transmit_mode()  # Permanente transmisión
+        
+        angles = [0, 45, 90, 135, 180, 90, 0]
+        
+        for angle in angles:
+            if not self.running:
+                break
+                
+            self.set_servo_angle(angle)
+            self.send_command(f"MOV:{angle}")
+            utime.sleep(2)
+        
+        self.set_receive_mode()
+        print("Demo Simplex completada")
+    
+    def demo_half_duplex(self):
+        """Demostración modo Half Duplex"""
+        print("\n=== MODO HALF DUPLEX ===")
+        self.mode = "HALF_DUPLEX"
+        
+        angles = [0, 60, 120, 180, 90, 30]
+        
+        for angle in angles:
+            if not self.running:
+                break
+                
+            # Transmitir posición
+            self.set_servo_angle(angle)
+            self.send_command(f"SET:{angle}")
+            
+            # Esperar y recibir confirmación
+            utime.sleep_ms(500)
+            response = self.receive_data(1000)
+            
+            if response:
+                print(f"Confirmación: {response}")
+            
+            utime.sleep(1)
+        
+        print("Demo Half Duplex completada")
+    
+    def demo_full_duplex(self):
+        """Demostración modo Full Duplex"""
+        print("\n=== MODO FULL DUPLEX ===")
+        self.mode = "FULL_DUPLEX"
+        
+        # Iniciar recepción en segundo plano
+        receiver_thread = _thread.start_new_thread(self.continuous_receiver, ())
+        
+        angles = [0, 30, 60, 90, 120, 150, 180, 90, 0]
+        
+        for angle in angles:
+            if not self.running:
+                break
+                
+            self.set_servo_angle(angle)
+            self.send_command(f"POS:{angle}")
+            utime.sleep(1.5)
+        
+        # Dar tiempo para respuestas finales
+        utime.sleep(2)
+        self.mode = "HALF_DUPLEX"  # Volver a modo normal
+        print("Demo Full Duplex completada")
+    
+    def manual_control(self):
+        """Control manual desde terminal"""
+        print("\n=== CONTROL MANUAL ===")
+        print("Comandos: 0-180 (ángulo), mode, status, quit")
+        
+        while self.running:
+            try:
+                command = input("Comando: ").strip()
+                
+                if command == "quit":
+                    break
+                elif command == "status":
+                    self.show_status()
+                elif command == "mode":
+                    self.select_mode()
+                else:
+                    # Intentar como ángulo
+                    angle = int(command)
+                    if self.set_servo_angle(angle):
+                        self.send_command(f"MANUAL:{angle}")
+                        
+            except ValueError:
+                print("Comando inválido")
+            except KeyboardInterrupt:
+                break
+    
+    def select_mode(self):
+        """Selección de modo de comunicación"""
+        print("\n--- Seleccionar Modo ---")
+        print("1. Simplex")
+        print("2. Half Duplex")
+        print("3. Full Duplex")
+        
+        choice = input("Modo (1-3): ").strip()
+        
+        if choice == "1":
+            self.mode = "SIMPLEX"
+        elif choice == "2":
+            self.mode = "HALF_DUPLEX"
+        elif choice == "3":
+            self.mode = "FULL_DUPLEX"
+        else:
+            print("Modo no cambiado")
+        
+        print(f"Modo actual: {self.mode}")
+    
+    def show_status(self):
+        """Muestra estado del sistema"""
+        print(f"\n=== ESTADO PICO 2W ===")
+        print(f"Modo: {self.mode}")
+        print(f"Servo: {self.servo_position}°")
+        print(f"TX: {self.commands_sent}, RX: {self.commands_received}")
+        print(f"DE: {self.de_pin.value()}, RE: {self.re_pin.value()}")
+        print("======================")
+    
+    def run_demo_sequence(self):
+        """Ejecuta demostración completa"""
+        print("Iniciando demostración completa...")
+        
+        self.demo_simplex()
+        utime.sleep(2)
+        
+        self.demo_half_duplex() 
+        utime.sleep(2)
+        
+        self.demo_full_duplex()
+        
+        print("\nDemostración completada!")
+        self.show_status()
+    
+    def cleanup(self):
+        """Limpieza de recursos"""
+        print("Limpiando recursos...")
+        self.running = False
+        self.servo.deinit()
+        self.set_servo_angle(90)  # Posición central
+        utime.sleep(1)
+
+def main():
+    """Función principal"""
+    system = None
+    
+    try:
+        system = ServoControlPico()
+        
+        while system.running:
+            print("\n--- MENÚ PRINCIPAL ---")
+            print("1. Control Manual")
+            print("2. Demo Simplex")
+            print("3. Demo Half Duplex") 
+            print("4. Demo Full Duplex")
+            print("5. Demo Completa")
+            print("6. Estado del Sistema")
+            print("7. Salir")
+            
+            try:
+                option = input("Opción: ").strip()
+                
+                if option == "1":
+                    system.manual_control()
+                elif option == "2":
+                    system.demo_simplex()
+                elif option == "3":
+                    system.demo_half_duplex()
+                elif option == "4":
+                    system.demo_full_duplex()
+                elif option == "5":
+                    system.run_demo_sequence()
+                elif option == "6":
+                    system.show_status()
+                elif option == "7":
+                    break
+                else:
+                    print("Opción inválida")
+                    
+            except KeyboardInterrupt:
+                print("\nInterrumpido por usuario")
+                break
+            except Exception as e:
+                print(f"Error: {e}")
+                
+    except Exception as e:
+        print(f"Error inicial: {e}")
+    finally:
+        if system:
+            system.cleanup()
+        print("Sistema terminado")
+
+if _name_ == "_main_":
+    main()
+
 
 Este código demuestra el principio de operación del estándar RS-485 en sistemas industriales, aplicando conceptos de comunicación serial diferencial, control de flujo, sincronización y direccionamiento, todo implementado en un entorno embebido real con Raspberry Pi Pico 2W.
+
+## configuracion Rs-485:   
+
+Configuración para Raspberry Pi Pico 2W - RS-485
+
+
+# Pines GPIO
+PINS = {
+    'uart_tx': 0,      # GPIO0 - TX
+    'uart_rx': 1,      # GPIO1 - RX  
+    'de': 2,           # GPIO2 - Driver Enable
+    're': 3,           # GPIO3 - Receiver Enable
+    'servo': 4,        # GPIO4 - Servo PWM
+    'led': 25          # GPIO25 - LED interno
+}
+
+# Configuración UART
+UART_CONFIG = {
+    'id': 0,
+    'baudrate': 9600,
+    'bits': 8,
+    'parity': None,
+    'stop': 1
+}
+
+# Configuración Servo
+SERVO_CONFIG = {
+    'min_angle': 0,
+    'max_angle': 180,
+    'pwm_freq': 50,
+    'min_duty': 1638,   # 0.5ms
+    'max_duty': 8192    # 2.5ms
+}
+
+# Modos de operación
+MODES = {
+    'SIMPLEX': {
+        'de': 1,
+        're': 1,
+        'desc': 'Solo transmisión'
+    },
+    'HALF_DUPLEX': {
+        'de': 'alternate', 
+        're': 'alternate',
+        'desc': 'TX/RX alternados'
+    },
+    'FULL_DUPLEX': {
+        'de': 1,
+        're': 0, 
+        'desc': 'TX/RX simultáneos'
+    }
+}
 
 
