@@ -23,3 +23,6 @@ PROFINET: Se determina como ethernet industrial definido por PROFIBUS y PROFINET
 
 -> Desventajas: Requiere switches y por lo tanto, suele tener mayor complejidad en la configuración.   
 
+## Segundo punto:   
+
+Para el segundo punto se utilizo una raspberry pi pico 2w y un servo motor.
