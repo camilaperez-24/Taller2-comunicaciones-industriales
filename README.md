@@ -1,4 +1,5 @@
 # Taller2-comunicaciones-industriales
+## integrantes: camila perez, santiago hernandez, diego alejandro rodriguez.
 ## Primer punto 
 PROFIBUS (PROcess Fleld Bus): Se determina como un Bus de campo serial direccionado principalmente a la automatización industrial.  
 
