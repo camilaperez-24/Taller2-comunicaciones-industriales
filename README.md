@@ -26,7 +26,7 @@ PROFINET: Se determina como ethernet industrial definido por PROFIBUS y PROFINET
 ## Segundo punto:   
 
 Para el segundo punto se utilizo una raspberry pi pico 2w y un servo motor.
-![Raspberry](Raspberry.jng)
+![Raspberry](Raspberry.jpg)
 ![servomotor](servomotor.jpg)
 
 En esta actividad se desarrolló un sistema de control para un servo motor SG90 utilizando una Raspberry Pi Pico 2W conectada a través de un módulo MAX485 para comunicación industrial mediante RS-485. El objetivo fue demostrar los tres modos de comunicación (Simplex, Half Dúplex y Full Dúplex) y observar cómo afectan el intercambio de información entre dispositivos.
